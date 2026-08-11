@@ -1,56 +1,74 @@
-# Welcome to your Expo app 👋
+# Simple Food Scanner
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+A free, offline-first calorie and macro tracker. Barcode scanning, food search, custom
+foods, recipes and macro targets — no subscription, no account, no paywall.
 
-## Get started
+Built because MyFitnessPal put barcode scanning behind a subscription, which is the one
+feature that makes food logging fast enough to stick with.
 
-1. Install dependencies
+## Stack
 
-   ```bash
-   npm install
-   ```
+- **Expo SDK 57** + expo-router (iOS and Android from one TypeScript codebase)
+- **expo-camera** `CameraView` for barcode scanning (EAN-8/13, UPC-A/E)
+- **expo-sqlite** + **Drizzle ORM** — SQLite is the source of truth, on device
+- **Open Food Facts** for product and nutrition data (ODbL)
+- **TanStack Query** for network state, **zustand** for UI state
 
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## Getting started
 
 ```bash
-npm run reset-project
+npm install
+npx expo run:ios      # or: npx expo run:android
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Barcode scanning needs a **development build** — it does not work in Expo Go, because
+the camera's barcode scanner is a native module. `expo run:ios` / `expo run:android`
+produce one.
 
-### Other setup steps
+## Scripts
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+| Command | What it does |
+|---|---|
+| `npm test` | Unit tests for the pure domain logic (no network, no device) |
+| `npm run test:live` | Contract tests against the real Open Food Facts API |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run db:generate` | Regenerate Drizzle migrations after a schema change |
 
-## Learn more
+## Architecture notes
 
-To learn more about developing your project with Expo, look at the following resources:
+**Local-first.** Every product you scan is written into the local `foods` table, so
+re-scanning a food you have logged before works with the radio off. Network failures
+fall back to that cache rather than erroring.
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+**Sync-ready schema.** Every user-owned table uses text UUID primary keys plus
+`updated_at` / `deleted_at`. Deletes are tombstones, not row removals. Cloud sync is not
+implemented, but adding it is additive rather than a migration.
 
-## Join the community
+**Macro snapshots.** `diary_entries` stores the macros each entry contributed at the
+time it was logged. Editing a food, or refreshing its Open Food Facts record, must never
+rewrite what last Tuesday's diary says you ate.
 
-Join our community of developers creating universal apps.
+**Nutrition is stored per 100 g/ml only.** Open Food Facts publishes it that way, and
+serving sizes are frequently missing upstream — the Nutella record has neither
+`serving_size` nor `serving_quantity`. The `portions` table exists so a user can define
+"1 slice = 32 g" once and reuse it.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+## Open Food Facts rules
+
+These are requirements from a volunteer-run service that gives away the data this app
+depends on, not optimizations:
+
+- A custom `User-Agent` (`AppName/Version (contact)`) is **mandatory** on every request.
+- 15 product reads/min/IP, 10 searches/min/IP. `src/off/client.ts` enforces both with
+  separate sliding-window buckets and in-flight request deduplication.
+- Text search goes to `search.openfoodfacts.org` (Search-a-licious). The legacy
+  `world.openfoodfacts.org/cgi/search.pl` endpoint is retired and returns 503 — do not
+  "fix" a search failure by pointing back at it.
+- An unknown barcode returns HTTP **404** with a `status: "failure"` body. That is a
+  normal outcome, not an error: the app routes it to the custom food editor with the
+  barcode prefilled.
+
+## Attribution
+
+Product data from [Open Food Facts](https://openfoodfacts.org), available under the
+[Open Database License](https://opendatacommons.org/licenses/odbl/1-0/).
