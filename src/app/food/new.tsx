@@ -7,15 +7,11 @@ import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { upsertFood } from '@/db/repository';
 import { useTheme } from '@/hooks/use-theme';
+import { parseNonNegativeNumber } from '@/lib/number';
 
 type FieldKey = 'name' | 'brand' | 'kcal' | 'protein' | 'carbs' | 'fat' | 'servingSize';
 
 const NUMERIC_FIELDS: FieldKey[] = ['kcal', 'protein', 'carbs', 'fat', 'servingSize'];
-
-function parseNumber(value: string): number | null {
-  const parsed = Number.parseFloat(value.replace(',', '.'));
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
-}
 
 /**
  * Hand-entered food. Reached either from Settings or, more often, straight from a
@@ -38,7 +34,7 @@ export default function NewFoodScreen() {
   const [baseUnit, setBaseUnit] = useState<'g' | 'ml'>('g');
   const [saving, setSaving] = useState(false);
 
-  const kcal = parseNumber(values.kcal);
+  const kcal = parseNonNegativeNumber(values.kcal);
   const canSave = values.name.trim().length > 0 && kcal !== null;
 
   function setField(key: FieldKey, value: string) {
@@ -61,11 +57,11 @@ export default function NewFoodScreen() {
         name: values.name.trim(),
         brand: values.brand.trim() || null,
         kcalPer100g: kcal,
-        proteinPer100g: parseNumber(values.protein) ?? 0,
-        carbsPer100g: parseNumber(values.carbs) ?? 0,
-        fatPer100g: parseNumber(values.fat) ?? 0,
+        proteinPer100g: parseNonNegativeNumber(values.protein) ?? 0,
+        carbsPer100g: parseNonNegativeNumber(values.carbs) ?? 0,
+        fatPer100g: parseNonNegativeNumber(values.fat) ?? 0,
         baseUnit,
-        servingSizeG: parseNumber(values.servingSize),
+        servingSizeG: parseNonNegativeNumber(values.servingSize),
         fetchedAt: null,
         createdAt: seconds,
         updatedAt: seconds,

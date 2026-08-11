@@ -8,6 +8,7 @@ import { Spacing } from '@/constants/theme';
 import { quickAdd } from '@/db/repository';
 import type { Meal } from '@/db/schema';
 import { useTheme } from '@/hooks/use-theme';
+import { parsePositiveNumber } from '@/lib/number';
 import { useDiaryStore } from '@/stores/diary-store';
 
 const MEALS: Meal[] = ['breakfast', 'lunch', 'dinner', 'snack'];
@@ -25,11 +26,11 @@ export default function QuickAddScreen() {
   const [text, setText] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const kcal = Number.parseFloat(text.replace(',', '.'));
-  const canSave = Number.isFinite(kcal) && kcal > 0;
+  const kcal = parsePositiveNumber(text);
+  const canSave = kcal !== null;
 
   async function handleSave() {
-    if (!canSave) return;
+    if (kcal === null) return;
     setSaving(true);
     try {
       await quickAdd(date, meal, kcal);

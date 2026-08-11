@@ -10,6 +10,7 @@ import { recentFoodsQuery } from '@/db/queries';
 import { saveRecipe } from '@/db/repository';
 import type { Food } from '@/db/schema';
 import { useTheme } from '@/hooks/use-theme';
+import { parseNonNegativeNumber, parsePositiveNumber } from '@/lib/number';
 import { roundTotals } from '@/nutrition/portion';
 import { calculateRecipe } from '@/nutrition/recipe';
 
@@ -29,14 +30,16 @@ export default function RecipeScreen() {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [saving, setSaving] = useState(false);
 
-  const servingCount = Number.parseFloat(servings.replace(',', '.'));
+  const servingCount = parsePositiveNumber(servings);
 
   const nutrition = useMemo(() => {
     const ingredients = drafts.map((draft) => ({
       ...draft.food,
-      grams: Number.parseFloat(draft.grams.replace(',', '.')) || 0,
+      grams: parseNonNegativeNumber(draft.grams) ?? 0,
     }));
-    return calculateRecipe(ingredients, servingCount);
+    // `calculateRecipe` already falls back to one serving for a nonsense count, which is
+    // what keeps the live preview finite while the field is still being typed into.
+    return calculateRecipe(ingredients, servingCount ?? 0);
   }, [drafts, servingCount]);
 
   const canSave = name.trim().length > 0 && nutrition.totalGrams > 0;
@@ -65,10 +68,10 @@ export default function RecipeScreen() {
     try {
       await saveRecipe(
         name.trim(),
-        servingCount > 0 ? servingCount : 1,
+        servingCount ?? 1,
         drafts.map((draft) => ({
           foodId: draft.food.id,
-          grams: Number.parseFloat(draft.grams.replace(',', '.')) || 0,
+          grams: parseNonNegativeNumber(draft.grams) ?? 0,
         })),
       );
       router.back();

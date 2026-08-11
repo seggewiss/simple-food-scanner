@@ -132,6 +132,13 @@ export const profile = sqliteTable('profile', {
     enum: ['sedentary', 'light', 'moderate', 'active', 'very_active'],
   }).notNull(),
   goal: text('goal', { enum: ['lose', 'maintain', 'gain'] }).notNull(),
+  /**
+   * Goal weight in kg. Nullable because a `maintain` goal has no destination, and
+   * because profiles saved before this column existed have no value to backfill from.
+   * Never feeds the calorie maths — that uses `weightKg`, the current weight — it only
+   * drives the projected completion date and the direction sanity check.
+   */
+  targetWeightKg: real('target_weight_kg'),
   /** Target rate of weight change in kg per week; sign follows `goal`. */
   rateKgPerWeek: real('rate_kg_per_week').notNull().default(0),
 

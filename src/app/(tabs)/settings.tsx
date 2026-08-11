@@ -7,18 +7,23 @@ import { useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { ExternalLink } from '@/components/external-link';
+import { formatDate } from '@/components/form-fields';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { BackupFormatError, exportBackup, importBackup, parseBackup } from '@/db/backup';
 import { profileQuery } from '@/db/queries';
+import type { Profile } from '@/db/schema';
 import { useTheme } from '@/hooks/use-theme';
-import { todayIso } from '@/lib/date';
+import { parseIsoDate, todayIso } from '@/lib/date';
+import { estimatedGoalDate } from '@/nutrition/targets';
 
 export default function SettingsScreen() {
   const theme = useTheme();
   const { data: profileRows } = useLiveQuery(profileQuery());
   const profile = profileRows?.[0];
   const [busy, setBusy] = useState<'export' | 'import' | null>(null);
+
+  const projection = profile ? describeProjection(profile) : null;
 
   async function handleExport() {
     setBusy('export');
@@ -68,12 +73,22 @@ export default function SettingsScreen() {
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <ThemedText type="smallBold">Goal</ThemedText>
+      <ThemedText type="smallBold">Your goal</ThemedText>
       {profile ? (
-        <ThemedText type="small" themeColor="textSecondary">
-          {Math.round(profile.kcalTarget)} kcal · P {Math.round(profile.proteinTargetG)} g · C{' '}
-          {Math.round(profile.carbsTargetG)} g · F {Math.round(profile.fatTargetG)} g
-        </ThemedText>
+        <>
+          <ThemedText type="small" themeColor="textSecondary">
+            {describeGoal(profile)}
+          </ThemedText>
+          <ThemedText type="small" themeColor="textSecondary">
+            {Math.round(profile.kcalTarget)} kcal · P {Math.round(profile.proteinTargetG)} g · C{' '}
+            {Math.round(profile.carbsTargetG)} g · F {Math.round(profile.fatTargetG)} g
+          </ThemedText>
+          {projection ? (
+            <ThemedText type="small" themeColor="textSecondary">
+              {projection}
+            </ThemedText>
+          ) : null}
+        </>
       ) : (
         <ThemedText type="small" themeColor="textSecondary">
           No goal set yet — the diary will only show what you have eaten, not what is left.
@@ -87,7 +102,7 @@ export default function SettingsScreen() {
 
       <View style={styles.divider} />
 
-      <ThemedText type="smallBold">Your data</ThemedText>
+      <ThemedText type="smallBold">Backup &amp; restore</ThemedText>
       <ThemedText type="small" themeColor="textSecondary">
         Everything is stored on this device. Export a JSON copy to back it up or move to a new
         phone. Importing merges — it never deletes what is already here.
@@ -127,6 +142,48 @@ export default function SettingsScreen() {
       </ExternalLink>
     </ScrollView>
   );
+}
+
+const GOAL_LABELS: Record<Profile['goal'], string> = {
+  lose: 'Lose weight',
+  maintain: 'Maintain weight',
+  gain: 'Gain weight',
+};
+
+/**
+ * The stored goal in one line, so "Edit goal" is not the only way to find out what was
+ * saved. The target segment is omitted rather than shown as a placeholder when there is
+ * no target — a maintain goal has none, and neither does a profile saved before target
+ * weights existed.
+ */
+function describeGoal(profile: Profile): string {
+  const parts = [GOAL_LABELS[profile.goal]];
+
+  if (profile.targetWeightKg != null) {
+    parts.push(`${profile.weightKg.toFixed(1)} → ${profile.targetWeightKg.toFixed(1)} kg`);
+  } else {
+    parts.push(`${profile.weightKg.toFixed(1)} kg`);
+  }
+
+  if (profile.goal !== 'maintain') {
+    parts.push(`${profile.rateKgPerWeek} kg per week`);
+  }
+
+  return parts.join(' · ');
+}
+
+function describeProjection(profile: Profile): string | null {
+  if (profile.targetWeightKg == null) return null;
+
+  const date = estimatedGoalDate(
+    profile.goal,
+    profile.weightKg,
+    profile.targetWeightKg,
+    profile.rateKgPerWeek,
+  );
+  if (!date) return null;
+
+  return `On track to reach ${profile.targetWeightKg.toFixed(1)} kg around ${formatDate(parseIsoDate(date))}.`;
 }
 
 const styles = StyleSheet.create({

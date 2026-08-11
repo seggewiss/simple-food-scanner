@@ -5,6 +5,8 @@
  * is more accurate than Harris-Benedict for the general population.
  */
 
+import { shiftIsoDate, todayIso } from '@/lib/date';
+
 export type Sex = 'male' | 'female';
 export type ActivityLevel = 'sedentary' | 'light' | 'moderate' | 'active' | 'very_active';
 export type Goal = 'lose' | 'maintain' | 'gain';
@@ -116,6 +118,57 @@ export function calculateTargets(input: TargetInput): TargetResult {
     clamped,
     ...splitMacros(kcal, input.weightKg),
   };
+}
+
+/**
+ * Whether a target weight makes sense for the chosen direction.
+ *
+ * Asking to lose weight while naming a target above the current weight is the kind of
+ * mistake that otherwise saves cleanly and then quietly produces a nonsense projection,
+ * so the form blocks it rather than guessing at the intent.
+ */
+export function targetIsConsistent(goal: Goal, currentKg: number, targetKg: number): boolean {
+  if (goal === 'maintain') return true;
+  return goal === 'lose' ? targetKg < currentKg : targetKg > currentKg;
+}
+
+/**
+ * Weeks needed to move from the current weight to the target at a given weekly rate.
+ * Null when the journey cannot happen: no rate, or nothing to travel.
+ */
+export function weeksToTarget(
+  currentKg: number,
+  targetKg: number,
+  rateKgPerWeek: number,
+): number | null {
+  const distance = Math.abs(targetKg - currentKg);
+  const rate = Math.abs(rateKgPerWeek);
+  if (distance === 0 || rate === 0) return null;
+  return distance / rate;
+}
+
+/**
+ * Projected calendar day the target weight is reached, as `YYYY-MM-DD`.
+ *
+ * This is a straight-line estimate off the requested rate, not a prediction — it exists
+ * so the trade-off in the rate control is legible ("0.25 kg/week means next summer").
+ * Null whenever the goal has no destination or the target sits on the wrong side of the
+ * current weight for the chosen direction.
+ */
+export function estimatedGoalDate(
+  goal: Goal,
+  currentKg: number,
+  targetKg: number,
+  rateKgPerWeek: number,
+  from: string = todayIso(),
+): string | null {
+  if (goal === 'maintain') return null;
+  if (!targetIsConsistent(goal, currentKg, targetKg)) return null;
+
+  const weeks = weeksToTarget(currentKg, targetKg, rateKgPerWeek);
+  if (weeks === null) return null;
+
+  return shiftIsoDate(from, Math.ceil(weeks * 7));
 }
 
 /** Whole years between a `YYYY-MM-DD` birth date and a reference date. */

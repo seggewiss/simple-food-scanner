@@ -196,6 +196,18 @@ export async function deleteDiaryEntry(id: string) {
     .where(eq(diaryEntries.id, id));
 }
 
+/**
+ * Reverse a soft delete. Because `deleteDiaryEntry` only tombstones the row, undo is a
+ * field reset rather than a re-insert — the entry keeps its id and its original
+ * denormalized nutrition snapshot.
+ */
+export async function restoreDiaryEntry(id: string) {
+  await db
+    .update(diaryEntries)
+    .set({ deletedAt: null, updatedAt: nowSeconds() })
+    .where(eq(diaryEntries.id, id));
+}
+
 export async function getProfile() {
   const [row] = await db.select().from(profile).limit(1);
   return row;

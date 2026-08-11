@@ -1,15 +1,16 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useLiveQuery } from 'drizzle-orm/expo-sqlite';
 import { Link, router } from 'expo-router';
-import { useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { MacroSummary } from '@/components/macro-summary';
+import { SwipeableRow } from '@/components/swipeable-row';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { diaryForDateQuery, profileQuery, type DiaryQueryRow } from '@/db/queries';
-import { copyDay, deleteDiaryEntry } from '@/db/repository';
+import { copyDay, deleteDiaryEntry, restoreDiaryEntry } from '@/db/repository';
 import type { Meal } from '@/db/schema';
 import { useTheme } from '@/hooks/use-theme';
 import { parseIsoDate, shiftIsoDate, todayIso } from '@/lib/date';
@@ -17,6 +18,9 @@ import { sumTotals, type MacroTotals } from '@/nutrition/portion';
 import { useDiaryStore } from '@/stores/diary-store';
 
 const MEALS: Meal[] = ['breakfast', 'lunch', 'dinner', 'snack'];
+
+/** How long the undo affordance stays on screen after a removal. */
+const UNDO_TIMEOUT_MS = 5000;
 
 const MEAL_LABELS: Record<Meal, string> = {
   breakfast: 'Breakfast',
@@ -52,6 +56,36 @@ export default function DiaryScreen() {
 
   const isToday = date === todayIso();
 
+  // Removal is immediate and undoable rather than confirmed up front: the swipe is
+  // already a deliberate gesture, and `deleteDiaryEntry` only tombstones the row, so
+  // putting it back is free.
+  const [undo, setUndo] = useState<{ id: string; name: string } | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearUndoTimer = useCallback(() => {
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    undoTimer.current = null;
+  }, []);
+
+  useEffect(() => clearUndoTimer, [clearUndoTimer]);
+
+  const handleDelete = useCallback(
+    (entry: DiaryQueryRow) => {
+      void deleteDiaryEntry(entry.id);
+      clearUndoTimer();
+      setUndo({ id: entry.id, name: entry.foodName });
+      undoTimer.current = setTimeout(() => setUndo(null), UNDO_TIMEOUT_MS);
+    },
+    [clearUndoTimer],
+  );
+
+  const handleUndo = useCallback(() => {
+    if (!undo) return;
+    void restoreDiaryEntry(undo.id);
+    clearUndoTimer();
+    setUndo(null);
+  }, [undo, clearUndoTimer]);
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ScrollView contentContainerStyle={styles.container}>
@@ -79,6 +113,7 @@ export default function DiaryScreen() {
             key={meal}
             meal={meal}
             entries={byMeal[meal]}
+            onDelete={handleDelete}
             onAdd={() => {
               setMeal(meal);
               router.push('/scan');
@@ -104,6 +139,19 @@ export default function DiaryScreen() {
           </Pressable>
         </View>
       </ScrollView>
+
+      {undo ? (
+        <View style={[styles.undoBar, { backgroundColor: theme.backgroundSelected }]}>
+          <ThemedText type="small" numberOfLines={1} style={styles.undoText}>
+            Removed {undo.name}
+          </ThemedText>
+          <Pressable onPress={handleUndo} hitSlop={10}>
+            <ThemedText type="smallBold" themeColor="accent">
+              Undo
+            </ThemedText>
+          </Pressable>
+        </View>
+      ) : null}
 
       <View style={styles.fabRow}>
         <Link href="/search" asChild>
@@ -145,10 +193,12 @@ function MealSection({
   meal,
   entries,
   onAdd,
+  onDelete,
 }: {
   meal: Meal;
   entries: DiaryQueryRow[];
   onAdd: () => void;
+  onDelete: (entry: DiaryQueryRow) => void;
 }) {
   const theme = useTheme();
   const total = Math.round(sumTotals(entries).kcal);
@@ -172,41 +222,33 @@ function MealSection({
           Nothing logged.
         </ThemedText>
       ) : (
-        entries.map((entry) => <DiaryRow key={entry.id} entry={entry} />)
+        entries.map((entry) => (
+          <DiaryRow key={entry.id} entry={entry} onDelete={() => onDelete(entry)} />
+        ))
       )}
     </View>
   );
 }
 
-function DiaryRow({ entry }: { entry: DiaryQueryRow }) {
+function DiaryRow({ entry, onDelete }: { entry: DiaryQueryRow; onDelete: () => void }) {
   const theme = useTheme();
 
-  function confirmDelete() {
-    Alert.alert('Remove entry', `Remove ${entry.foodName} from your diary?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Remove',
-        style: 'destructive',
-        onPress: () => {
-          void deleteDiaryEntry(entry.id);
-        },
-      },
-    ]);
-  }
-
   return (
-    <Pressable
-      onLongPress={confirmDelete}
-      style={[styles.row, { borderColor: theme.border }]}>
-      <View style={styles.rowText}>
-        <ThemedText numberOfLines={1}>{entry.foodName}</ThemedText>
-        <ThemedText type="small" themeColor="textSecondary">
-          {formatAmount(entry)} · P {Math.round(entry.protein)} · C {Math.round(entry.carbs)} · F{' '}
-          {Math.round(entry.fat)}
-        </ThemedText>
+    // Long press stays wired to the same immediate delete as the swipe action, so both
+    // routes behave identically for anyone who learned the old gesture.
+    <SwipeableRow onDelete={onDelete} onLongPress={onDelete}>
+      <View
+        style={[styles.row, { borderColor: theme.border, backgroundColor: theme.background }]}>
+        <View style={styles.rowText}>
+          <ThemedText numberOfLines={1}>{entry.foodName}</ThemedText>
+          <ThemedText type="small" themeColor="textSecondary">
+            {formatAmount(entry)} · P {Math.round(entry.protein)} · C {Math.round(entry.carbs)} · F{' '}
+            {Math.round(entry.fat)}
+          </ThemedText>
+        </View>
+        <ThemedText>{Math.round(entry.kcal)}</ThemedText>
       </View>
-      <ThemedText>{Math.round(entry.kcal)}</ThemedText>
-    </Pressable>
+    </SwipeableRow>
   );
 }
 
@@ -320,5 +362,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
     gap: Spacing.three,
+  },
+  undoBar: {
+    alignItems: 'center',
+    borderRadius: 12,
+    // Sits clear of the FAB row, which occupies the bottom-right corner.
+    bottom: Spacing.six + Spacing.three,
+    flexDirection: 'row',
+    gap: Spacing.three,
+    justifyContent: 'space-between',
+    left: Spacing.four,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    position: 'absolute',
+    right: Spacing.four,
+  },
+  undoText: {
+    flexShrink: 1,
   },
 });

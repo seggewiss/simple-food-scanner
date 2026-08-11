@@ -9,6 +9,7 @@ import { recentWeightsQuery } from '@/db/queries';
 import { recordWeight } from '@/db/repository';
 import { useTheme } from '@/hooks/use-theme';
 import { parseIsoDate, todayIso } from '@/lib/date';
+import { parsePositiveNumber } from '@/lib/number';
 
 export default function ProgressScreen() {
   const theme = useTheme();
@@ -22,8 +23,8 @@ export default function ProgressScreen() {
   const change = latest && oldest && rows.length > 1 ? latest.weightKg - oldest.weightKg : null;
 
   async function handleSave() {
-    const parsed = Number.parseFloat(input.replace(',', '.'));
-    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    const parsed = parsePositiveNumber(input);
+    if (parsed === null) return;
     setSaving(true);
     try {
       // Keyed on the date, so logging twice in one day corrects the entry rather than

@@ -6,8 +6,11 @@ import {
   calculateTargets,
   calculateTdee,
   dailyDeltaForRate,
+  estimatedGoalDate,
   MIN_KCAL_TARGET,
   splitMacros,
+  targetIsConsistent,
+  weeksToTarget,
   type TargetInput,
 } from './targets';
 
@@ -97,6 +100,69 @@ describe('calculateTargets', () => {
     });
     expect(result.kcal).toBe(MIN_KCAL_TARGET);
     expect(result.clamped).toBe(true);
+  });
+});
+
+describe('targetIsConsistent', () => {
+  it('requires a losing target below the current weight', () => {
+    expect(targetIsConsistent('lose', 80, 72)).toBe(true);
+    expect(targetIsConsistent('lose', 80, 85)).toBe(false);
+    expect(targetIsConsistent('lose', 80, 80)).toBe(false);
+  });
+
+  it('requires a gaining target above the current weight', () => {
+    expect(targetIsConsistent('gain', 60, 66)).toBe(true);
+    expect(targetIsConsistent('gain', 60, 55)).toBe(false);
+  });
+
+  it('accepts anything when maintaining, since the target is unused', () => {
+    expect(targetIsConsistent('maintain', 80, 120)).toBe(true);
+  });
+});
+
+describe('weeksToTarget', () => {
+  it('divides the distance by the weekly rate', () => {
+    expect(weeksToTarget(80, 72, 0.5)).toBe(16);
+    expect(weeksToTarget(60, 66, 0.25)).toBe(24);
+  });
+
+  it('ignores the sign of the rate, which the goal already carries', () => {
+    expect(weeksToTarget(80, 72, -0.5)).toBe(16);
+  });
+
+  it('returns null when there is no rate or no distance', () => {
+    expect(weeksToTarget(80, 72, 0)).toBeNull();
+    expect(weeksToTarget(80, 80, 0.5)).toBeNull();
+  });
+});
+
+describe('estimatedGoalDate', () => {
+  it('projects the day a losing target is reached', () => {
+    // 8 kg at 0.5 kg/week = 16 weeks = 112 days after 2026-01-01.
+    expect(estimatedGoalDate('lose', 80, 72, 0.5, '2026-01-01')).toBe('2026-04-23');
+  });
+
+  it('projects the day a gaining target is reached', () => {
+    // 6 kg at 0.25 kg/week = 24 weeks = 168 days after 2026-01-01.
+    expect(estimatedGoalDate('gain', 60, 66, 0.25, '2026-01-01')).toBe('2026-06-18');
+  });
+
+  it('rounds a partial week up to a whole day', () => {
+    // 1 kg at 0.3 kg/week = 3.33 weeks = 23.33 days -> 24 days.
+    expect(estimatedGoalDate('lose', 80, 79, 0.3, '2026-01-01')).toBe('2026-01-25');
+  });
+
+  it('has no date when maintaining', () => {
+    expect(estimatedGoalDate('maintain', 80, 72, 0.5, '2026-01-01')).toBeNull();
+  });
+
+  it('has no date at a zero rate', () => {
+    expect(estimatedGoalDate('lose', 80, 72, 0, '2026-01-01')).toBeNull();
+  });
+
+  it('has no date when the target sits on the wrong side of the current weight', () => {
+    expect(estimatedGoalDate('lose', 80, 85, 0.5, '2026-01-01')).toBeNull();
+    expect(estimatedGoalDate('gain', 80, 75, 0.5, '2026-01-01')).toBeNull();
   });
 });
 

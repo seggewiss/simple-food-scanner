@@ -1,17 +1,32 @@
 import { useLiveQuery } from 'drizzle-orm/expo-sqlite';
 import { router, Stack } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
+import {
+  DateField,
+  formatDate,
+  FormSection,
+  NumberField,
+  PickerField,
+  SegmentedField,
+  SliderField,
+} from '@/components/form-fields';
 import { ThemedText } from '@/components/themed-text';
+import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { profileQuery } from '@/db/queries';
 import { saveProfile } from '@/db/repository';
+import type { Profile } from '@/db/schema';
 import { useTheme } from '@/hooks/use-theme';
+import { parseIsoDate } from '@/lib/date';
+import { parsePositiveNumber } from '@/lib/number';
 import {
   ACTIVITY_MULTIPLIERS,
   ageFromBirthDate,
   calculateTargets,
+  estimatedGoalDate,
+  targetIsConsistent,
   type ActivityLevel,
   type Goal,
   type Sex,
@@ -26,44 +41,101 @@ const ACTIVITY_LABELS: Record<ActivityLevel, string> = {
 };
 
 const GOAL_LABELS: Record<Goal, string> = {
-  lose: 'Lose weight',
+  lose: 'Lose',
   maintain: 'Maintain',
-  gain: 'Gain weight',
+  gain: 'Gain',
+};
+
+const SEX_LABELS: Record<Sex, string> = {
+  male: 'Male',
+  female: 'Female',
 };
 
 const ACTIVITY_LEVELS = Object.keys(ACTIVITY_MULTIPLIERS) as ActivityLevel[];
+const SEXES: Sex[] = ['male', 'female'];
+const GOALS: Goal[] = ['lose', 'maintain', 'gain'];
 
-function parseNumber(value: string): number | null {
-  const parsed = Number.parseFloat(value.replace(',', '.'));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+/** Nobody alive is older than this, and the picker should not offer it. */
+const OLDEST_BIRTH_DATE = new Date(new Date().getFullYear() - 120, 0, 1);
+
+const DEFAULT_BIRTH_DATE = '1990-01-01';
+const MIN_RATE = 0.1;
+const MAX_RATE = 1;
+
+/**
+ * The birth date used to be free text, so a stored profile can hold something the date
+ * picker cannot parse. Fall back rather than handing an Invalid Date to the native view.
+ */
+function safeBirthDate(stored: string | undefined): string {
+  return stored && /^\d{4}-\d{2}-\d{2}$/.test(stored) ? stored : DEFAULT_BIRTH_DATE;
+}
+
+/** Older profiles may hold a rate outside what the slider offers; pull it into range. */
+function safeRate(stored: number | undefined): number {
+  if (!stored) return 0.5;
+  return Math.min(MAX_RATE, Math.max(MIN_RATE, stored));
 }
 
 /**
- * Goal setup. Targets are computed live as the user types so the trade-off between
- * activity level, rate and calories is visible before anything is saved.
+ * Waits for the saved profile before mounting the form.
+ *
+ * `useLiveQuery` starts with an empty array and only fills it from an effect, so reading
+ * it during the first render cannot distinguish "no profile yet" from "not loaded yet".
+ * `updatedAt` is set only once a query result has actually landed, which makes it the
+ * one reliable signal. Getting this wrong is not cosmetic: the form seeds its state from
+ * what it is handed, so mounting too early would show defaults and then overwrite the
+ * real profile with them on save.
  */
 export default function GoalScreen() {
+  const { data: profileRows, updatedAt } = useLiveQuery(profileQuery());
+
+  if (!updatedAt) {
+    return (
+      <ThemedView style={styles.loading}>
+        <Stack.Screen options={{ title: 'Your goal' }} />
+        <ActivityIndicator />
+      </ThemedView>
+    );
+  }
+
+  return <GoalForm existing={profileRows[0]} />;
+}
+
+/**
+ * Goal setup, split into who you are and what you want.
+ *
+ * The two are genuinely different things and were previously one undifferentiated list,
+ * which is what made "weight" ambiguous: the weight in the first section is what you
+ * weigh now and feeds the calorie maths, while the weight in the second is where you are
+ * heading and only drives the projection.
+ *
+ * Targets are computed live as the user types so the trade-off between activity level,
+ * rate and calories is visible before anything is saved.
+ */
+function GoalForm({ existing }: { existing: Profile | undefined }) {
   const theme = useTheme();
-  const { data: profileRows } = useLiveQuery(profileQuery());
-  const existing = profileRows?.[0];
 
   const [sex, setSex] = useState<Sex>(existing?.sex ?? 'male');
-  const [birthDate, setBirthDate] = useState(existing?.birthDate ?? '1990-01-01');
+  const [birthDate, setBirthDate] = useState(safeBirthDate(existing?.birthDate));
   const [heightCm, setHeightCm] = useState(String(existing?.heightCm ?? 180));
   const [weightKg, setWeightKg] = useState(String(existing?.weightKg ?? 80));
   const [activityLevel, setActivityLevel] = useState<ActivityLevel>(
     existing?.activityLevel ?? 'moderate',
   );
   const [goal, setGoal] = useState<Goal>(existing?.goal ?? 'maintain');
-  const [rate, setRate] = useState(String(existing?.rateKgPerWeek ?? 0.5));
+  const [targetWeightKg, setTargetWeightKg] = useState(
+    existing?.targetWeightKg != null ? String(existing.targetWeightKg) : '',
+  );
+  const [rate, setRate] = useState(safeRate(existing?.rateKgPerWeek));
   const [saving, setSaving] = useState(false);
 
-  const height = parseNumber(heightCm);
-  const weight = parseNumber(weightKg);
-  const age = /^\d{4}-\d{2}-\d{2}$/.test(birthDate) ? ageFromBirthDate(birthDate) : null;
+  const height = parsePositiveNumber(heightCm);
+  const weight = parsePositiveNumber(weightKg);
+  const target = parsePositiveNumber(targetWeightKg);
+  const age = ageFromBirthDate(birthDate);
 
   const result = useMemo(() => {
-    if (!height || !weight || age === null || age <= 0) return null;
+    if (!height || !weight || age <= 0) return null;
     return calculateTargets({
       sex,
       age,
@@ -71,12 +143,27 @@ export default function GoalScreen() {
       weightKg: weight,
       activityLevel,
       goal,
-      rateKgPerWeek: Number.parseFloat(rate.replace(',', '.')) || 0,
+      rateKgPerWeek: rate,
     });
   }, [sex, age, height, weight, activityLevel, goal, rate]);
 
+  const needsTarget = goal !== 'maintain';
+  const targetError =
+    needsTarget && target !== null && weight !== null && !targetIsConsistent(goal, weight, target)
+      ? goal === 'lose'
+        ? 'A losing goal needs a target below your current weight.'
+        : 'A gaining goal needs a target above your current weight.'
+      : null;
+
+  const projectedDate =
+    needsTarget && target !== null && weight !== null
+      ? estimatedGoalDate(goal, weight, target, rate)
+      : null;
+
+  const canSave = result !== null && targetError === null && !saving;
+
   async function handleSave() {
-    if (!result || !height || !weight || age === null) return;
+    if (!result || !height || !weight || !canSave) return;
     setSaving(true);
     try {
       await saveProfile({
@@ -86,7 +173,10 @@ export default function GoalScreen() {
         weightKg: weight,
         activityLevel,
         goal,
-        rateKgPerWeek: Number.parseFloat(rate.replace(',', '.')) || 0,
+        // A maintain goal has no destination, so the column is cleared rather than left
+        // holding a stale number from a previous losing or gaining goal.
+        targetWeightKg: needsTarget ? target : null,
+        rateKgPerWeek: rate,
         kcalTarget: result.kcal,
         proteinTargetG: result.proteinG,
         carbsTargetG: result.carbsG,
@@ -98,74 +188,80 @@ export default function GoalScreen() {
     }
   }
 
-  const inputStyle = [
-    styles.input,
-    { borderColor: theme.border, color: theme.text, backgroundColor: theme.backgroundElement },
-  ];
-
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
       <Stack.Screen options={{ title: 'Your goal' }} />
 
-      <ThemedText type="smallBold">Sex</ThemedText>
-      <ChipRow
-        options={['male', 'female'] as Sex[]}
-        value={sex}
-        onChange={setSex}
-        label={(option) => (option === 'male' ? 'Male' : 'Female')}
-      />
+      <FormSection title="About you" description="Used to work out how many calories you burn.">
+        <SegmentedField
+          label="Sex"
+          options={SEXES}
+          value={sex}
+          onChange={setSex}
+          labelFor={(option) => SEX_LABELS[option]}
+        />
+        <DateField
+          label="Date of birth"
+          hint={age > 0 ? `${age} years old` : 'Pick a date in the past.'}
+          value={birthDate}
+          onChange={setBirthDate}
+          minimumDate={OLDEST_BIRTH_DATE}
+          maximumDate={new Date()}
+        />
+        <NumberField label="Height" unit="cm" value={heightCm} onChangeText={setHeightCm} />
+        <NumberField
+          label="Current weight"
+          unit="kg"
+          hint="What you weigh today. Day-to-day weigh-ins live in Progress."
+          value={weightKg}
+          onChangeText={setWeightKg}
+        />
+        <PickerField
+          label="Activity"
+          options={ACTIVITY_LEVELS}
+          value={activityLevel}
+          onChange={setActivityLevel}
+          labelFor={(option) => ACTIVITY_LABELS[option]}
+        />
+      </FormSection>
 
-      <ThemedText type="smallBold">Date of birth (YYYY-MM-DD)</ThemedText>
-      <TextInput value={birthDate} onChangeText={setBirthDate} style={inputStyle} />
+      <FormSection
+        title="Your goal"
+        description="What you want your weight to do, and how fast.">
+        <SegmentedField
+          label="I want to"
+          options={GOALS}
+          value={goal}
+          onChange={setGoal}
+          labelFor={(option) => GOAL_LABELS[option]}
+        />
 
-      <View style={styles.pair}>
-        <View style={styles.pairItem}>
-          <ThemedText type="smallBold">Height (cm)</ThemedText>
-          <TextInput
-            value={heightCm}
-            onChangeText={setHeightCm}
-            keyboardType="decimal-pad"
-            style={inputStyle}
-          />
-        </View>
-        <View style={styles.pairItem}>
-          <ThemedText type="smallBold">Weight (kg)</ThemedText>
-          <TextInput
-            value={weightKg}
-            onChangeText={setWeightKg}
-            keyboardType="decimal-pad"
-            style={inputStyle}
-          />
-        </View>
-      </View>
-
-      <ThemedText type="smallBold">Activity</ThemedText>
-      <ChipRow
-        options={ACTIVITY_LEVELS}
-        value={activityLevel}
-        onChange={setActivityLevel}
-        label={(option) => ACTIVITY_LABELS[option]}
-      />
-
-      <ThemedText type="smallBold">Goal</ThemedText>
-      <ChipRow
-        options={['lose', 'maintain', 'gain'] as Goal[]}
-        value={goal}
-        onChange={setGoal}
-        label={(option) => GOAL_LABELS[option]}
-      />
-
-      {goal !== 'maintain' ? (
-        <>
-          <ThemedText type="smallBold">Rate (kg per week)</ThemedText>
-          <TextInput
-            value={rate}
-            onChangeText={setRate}
-            keyboardType="decimal-pad"
-            style={inputStyle}
-          />
-        </>
-      ) : null}
+        {needsTarget ? (
+          <>
+            <NumberField
+              label="Target weight"
+              unit="kg"
+              value={targetWeightKg}
+              onChangeText={setTargetWeightKg}
+              error={targetError}
+            />
+            <SliderField
+              label="Rate"
+              value={rate}
+              onChange={setRate}
+              min={MIN_RATE}
+              max={MAX_RATE}
+              step={0.05}
+              format={(value) => `${value.toFixed(2)} kg per week`}
+              hint={
+                projectedDate
+                  ? `At this rate you reach ${target} kg around ${formatDate(parseIsoDate(projectedDate))}.`
+                  : 'Enter a target weight to see when you would reach it.'
+              }
+            />
+          </>
+        ) : null}
+      </FormSection>
 
       {result ? (
         <View style={[styles.result, { backgroundColor: theme.backgroundElement }]}>
@@ -191,10 +287,10 @@ export default function GoalScreen() {
 
       <Pressable
         onPress={handleSave}
-        disabled={!result || saving}
+        disabled={!canSave}
         style={[
           styles.primaryButton,
-          { backgroundColor: result ? theme.accent : theme.backgroundSelected },
+          { backgroundColor: canSave ? theme.accent : theme.backgroundSelected },
         ]}>
         <ThemedText style={styles.primaryLabel}>{saving ? 'Saving…' : 'Save goal'}</ThemedText>
       </Pressable>
@@ -202,75 +298,19 @@ export default function GoalScreen() {
   );
 }
 
-function ChipRow<T extends string>({
-  options,
-  value,
-  onChange,
-  label,
-}: {
-  options: T[];
-  value: T;
-  onChange: (option: T) => void;
-  label: (option: T) => string;
-}) {
-  const theme = useTheme();
-
-  return (
-    <View style={styles.chipRow}>
-      {options.map((option) => (
-        <Pressable
-          key={option}
-          onPress={() => onChange(option)}
-          style={[
-            styles.chip,
-            { backgroundColor: option === value ? theme.accent : theme.backgroundElement },
-          ]}>
-          <ThemedText type="small" style={option === value ? styles.chipActive : undefined}>
-            {label(option)}
-          </ThemedText>
-        </Pressable>
-      ))}
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
-  chip: {
-    borderRadius: 999,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.two,
-  },
-  chipActive: {
-    color: '#ffffff',
-  },
-  chipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.two,
-  },
   container: {
-    gap: Spacing.two,
+    gap: Spacing.four,
     padding: Spacing.four,
   },
-  input: {
-    borderRadius: 12,
-    borderWidth: 1,
-    fontSize: 16,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.two,
-  },
-  pair: {
-    flexDirection: 'row',
-    gap: Spacing.three,
-  },
-  pairItem: {
+  loading: {
+    alignItems: 'center',
     flex: 1,
-    gap: Spacing.one,
+    justifyContent: 'center',
   },
   primaryButton: {
     alignItems: 'center',
     borderRadius: 14,
-    marginTop: Spacing.three,
     paddingVertical: Spacing.three,
   },
   primaryLabel: {
@@ -280,7 +320,6 @@ const styles = StyleSheet.create({
   result: {
     borderRadius: 16,
     gap: Spacing.one,
-    marginTop: Spacing.three,
     padding: Spacing.three,
   },
 });

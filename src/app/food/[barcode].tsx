@@ -9,6 +9,7 @@ import { Spacing } from '@/constants/theme';
 import { logFood } from '@/db/repository';
 import type { Meal } from '@/db/schema';
 import { useTheme } from '@/hooks/use-theme';
+import { parsePositiveNumber } from '@/lib/number';
 import { macrosForQuantity, roundTotals, type LogUnit } from '@/nutrition/portion';
 import { useFoodLookup } from '@/off/use-food-lookup';
 import { useDiaryStore } from '@/stores/diary-store';
@@ -29,16 +30,16 @@ export default function FoodDetailScreen() {
   const [saving, setSaving] = useState(false);
 
   const food = data?.status === 'found' ? data.food : undefined;
-  const quantity = Number.parseFloat(amountText.replace(',', '.'));
+  const quantity = parsePositiveNumber(amountText);
 
   const preview = useMemo(() => {
-    if (!food || !Number.isFinite(quantity)) return null;
+    if (!food || quantity === null) return null;
     const { grams, totals } = macrosForQuantity(food, quantity, unit, food.servingSizeG);
     return { grams, totals: roundTotals(totals) };
   }, [food, quantity, unit]);
 
   async function handleLog() {
-    if (!food || !preview || preview.grams <= 0) return;
+    if (!food || !preview || quantity === null || preview.grams <= 0) return;
     setSaving(true);
     try {
       await logFood({
